@@ -1,0 +1,167 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = "ap-south-1"
+        CLUSTER_NAME = "my-eks-cluster"
+        SSH_KEY_NAME = "Opstree"
+    }
+
+        
+    stages {
+        stage('Git Space Checkout Manifests...'){
+            steps{
+                sh '''
+                    rm -rf 3-Tier-Full-Stack
+                    git clone --depth 1 --filter=blob:none --sparse https://github.com/krithikasharma-OT/3-Tier-Full-Stack.git
+                    cd 3-Tier-Full-Stack/
+                    git sparse-checkout init
+                    git sparse-checkout set Manifests/
+                '''
+                
+            }
+        }
+        stage('User Input') {
+            steps {
+                script {
+                    def userChoice = input(
+                        message: 'Select an action for the EKS Cluster:',
+                        parameters: [
+                            choice(name: 'ACTION', choices: ['Create', 'Delete'], description: 'Choose Create to provision a new cluster or Delete to remove the existing one.')
+                        ]
+                    )
+                    env.ACTION = userChoice
+                }
+            }
+        }
+
+        stage('Install eksctl if not installed') {
+            steps {
+                script {
+                    sh 'which eksctl || (curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /usr/local/bin)'
+                }
+            }
+        }
+        
+        stage('Check if EKS cluster exists') {
+            steps {
+                script {
+                    def clusterExists = sh(script: "eksctl get cluster --region=$AWS_REGION --name=$CLUSTER_NAME > /dev/null 2>&1 && echo 'yes' || echo 'no'", returnStdout: true).trim()
+                    env.CLUSTER_EXISTS = clusterExists
+                }
+            }
+        }
+
+        stage('Create EKS Cluster') {
+            when {
+                allOf {
+                    expression { env.ACTION == 'Create' }
+                    expression { env.CLUSTER_EXISTS == 'no' }
+                }
+            }
+            steps {
+                script {
+                    sh """
+                       eksctl create cluster --name=$CLUSTER_NAME \\
+                            --region=$AWS_REGION \\
+                            --zones=ap-south-1a,ap-south-1b \\
+                            --version=1.30 \\
+                            --without-nodegroup
+                    """
+                }
+            }
+        }
+
+        stage('Associate IAM OIDC Provider') {
+            when {
+                allOf {
+                    expression { env.ACTION == 'Create' }
+                    expression { env.CLUSTER_EXISTS == 'no' }
+                }
+            }
+            steps {
+                script {
+                    sh """
+                        eksctl utils associate-iam-oidc-provider \\
+                        --region $AWS_REGION \\
+                        --cluster $CLUSTER_NAME \\
+                        --approve
+                    """
+                }
+            }
+        }
+
+        stage('Create Node Group') {
+            when {
+                allOf {
+                    expression { env.ACTION == 'Create' }
+                    expression { env.CLUSTER_EXISTS == 'no' }
+                }
+            }
+            steps {
+                script {
+                    sh """
+                        eksctl create nodegroup --cluster=$CLUSTER_NAME \\
+                            --region=$AWS_REGION \\
+                            --name=node2 \\
+                            --node-type=t2.medium \\
+                            --nodes=2 \\
+                            --nodes-min=2 \\
+                            --nodes-max=3 \\
+                            --node-volume-size=10 \\
+                            --ssh-access \\
+                            --ssh-public-key=$SSH_KEY_NAME \\
+                            --managed \\
+                            --asg-access \\
+                            --external-dns-access \\
+                            --full-ecr-access \\
+                            --appmesh-access \\
+                            --alb-ingress-access
+                    """
+                }
+            }
+        }
+        
+        stage('Create Service account and assign role') {
+            when {
+                allOf {
+                    expression { env.ACTION == 'Create' }
+                }
+            }
+            steps {
+                script {
+                    sh 'pwd'
+                    sh "kubectl apply -f ./3-Tier-Full-Stack/Manifests/ConfigureAccess.yml"
+                    sh "sleep 10"
+                    sh "kubectl describe secret mysecretname -n opstree"
+                }
+            }
+        }
+        
+        
+        stage('Delete EKS Cluster') {
+            when {
+                allOf {
+                    expression { env.ACTION == 'Delete' }
+                    expression { env.CLUSTER_EXISTS == 'yes' }
+                }
+            }
+            steps {
+                script {
+                    sh """
+                    eksctl delete cluster --name=$CLUSTER_NAME --region=$AWS_REGION --wait
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "EKS Cluster and Node Group successfully created!"
+        }
+        failure {
+            echo "EKS Cluster provisioning failed. Check logs."
+        }
+    }
+}
