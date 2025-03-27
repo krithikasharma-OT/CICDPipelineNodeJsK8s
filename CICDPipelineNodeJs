@@ -1,0 +1,157 @@
+pipeline {
+    agent any
+    
+    tools{
+        nodejs 'nodeJS22.14'
+    }
+    
+    environment{
+        SCANNER_HOME = tool 'SonarQubeScanner'
+        
+        SLACK_CHANNEL = "#jenkins"
+        SLACK_CREDENTIALS_ID = "slack-token"
+    }
+
+    stages {
+        stage('Code checkout') {
+            steps {
+                script{
+                    git branch: 'main', changelog: false, poll: false, url: 'https://github.com/krithikasharma-OT/3-Tier-Full-Stack.git'
+                    env.GIT_COMMIT_MSG = sh(script: 'git log -1 --pretty=%B', returnStdout: true).trim()
+                    env.GIT_AUTHOR = sh(script: 'git log -1 --pretty=%an', returnStdout: true).trim()
+                }
+            }
+        }
+        
+        stage('Setup .npmrc') {
+            steps {
+                    sh '''
+                    echo "registry=https://registry.npmjs.org/" > ~/.npmrc
+                    echo "//43.205.118.239:8081/repository/npm-hosted/:_auth=YWRtaW46bmV4dXM=" >> ~/.npmrc
+                    echo "always-auth=true" >> ~/.npmrc
+                    cat ~/.npmrc
+                    '''
+            }
+        }
+        
+        stage('install nodejs packages') {
+            steps {
+                sh 'npm install'
+            }
+        }
+        
+        stage('sonar analysis'){
+            steps{
+                withSonarQubeEnv('SonarConf') {
+                    sh "${SCANNER_HOME}/bin/sonar-scanner"
+                }
+            }    
+        }
+        
+        
+        stage('run unit tests') {
+            steps {
+                sh 'npm test'
+            }
+        }
+        
+        stage('Trivy FS Scan'){
+            steps{
+                sh 'trivy fs .'
+            }
+        }
+        
+        
+        stage('Publish package to nexus'){
+            steps{
+                sh 'npm publish'
+            }
+        }
+
+        
+        stage('build and tag docker image') {
+            steps {
+                sh "docker build -t krithikasharma/nodejscamp:v1 -f Dockerfile ."
+            }
+        }
+        
+        stage('Trivy Image Scan'){
+            steps{
+                sh 'trivy image --format table -o fs-report.html krithikasharma/nodejscamp:v1'
+            }
+        }
+        
+        stage('push docker image') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-passwd', usernameVariable: 'DockerUser', passwordVariable: 'DockerPass')]) {
+                    sh "docker push krithikasharma/nodejscamp:v1"
+                }
+            }
+        }
+        
+        stage('Save Deployment Artifacts') {
+            steps {
+                archiveArtifacts artifacts: 'Manifests/*.yml', fingerprint: true
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                def message = """
+                🚀 *Build Successful!*
+                🏗 *Job:* ${env.JOB_NAME}  
+                🔄 *Build Number:* #${env.BUILD_NUMBER}  
+                📂 *Branch:* ${sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()}
+                🛠 *Triggered By:* ${currentBuild.getBuildCauses().collect { it.shortDescription }.join(', ')}
+                📅 *Build Timestamp:* ${env.BUILD_TIMESTAMP}
+                ✏️ *Commit:* ${GIT_COMMIT_MSG}  
+                ✍️ *Author:* ${GIT_AUTHOR}  
+                🔗 *Build URL:* <${env.BUILD_URL}>  
+                """
+                slackSend(channel: SLACK_CHANNEL, color: 'good', message: message)
+            }
+        }
+
+        failure {
+            script {
+                def message = """
+                ❌ *Build Failed!*
+                🏗 *Job:* ${env.JOB_NAME}  
+                🔄 *Build Number:* #${env.BUILD_NUMBER}  
+                📂 *Branch:* ${sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()}  
+                🛠 *Triggered By:* ${currentBuild.getBuildCauses().collect { it.shortDescription }.join(', ')}
+                📅 *Build Timestamp:* ${env.BUILD_TIMESTAMP}
+                ✏️ *Commit:* ${GIT_COMMIT_MSG}  
+                ✍️ *Author:* ${GIT_AUTHOR}  
+                🔗 *Build URL:* <${env.BUILD_URL}>  
+                """
+                slackSend(channel: SLACK_CHANNEL, color: 'danger', message: message)
+            }
+        }
+
+        unstable {
+            script {
+                def message = """
+                ⚠️ *Build Unstable!*
+                🏗 *Job:* ${env.JOB_NAME}  
+                🔄 *Build Number:* #${env.BUILD_NUMBER}  
+                📂 *Branch:* ${sh(script: 'git rev-parse --abbrev-ref HEAD', returnStdout: true).trim()}
+                🛠 *Triggered By:* ${currentBuild.getBuildCauses().collect { it.shortDescription }.join(', ')}
+                📅 *Build Timestamp:* ${env.BUILD_TIMESTAMP}
+                ✏️ *Commit:* ${GIT_COMMIT_MSG}  
+                ✍️ *Author:* ${GIT_AUTHOR}  
+                🔗 *Build URL:* <${env.BUILD_URL}>  
+                """
+                slackSend(channel: SLACK_CHANNEL, color: 'warning', message: message)
+            }
+        }
+
+        always {
+            script {
+                slackSend(channel: SLACK_CHANNEL, color: '#439FE0', message: "📢 Jenkins Job Completed: ${env.JOB_NAME} #${env.BUILD_NUMBER}")
+            }
+        }
+    }
+}
