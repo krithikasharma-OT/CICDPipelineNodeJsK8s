@@ -1,0 +1,56 @@
+pipeline {
+    agent any
+    
+    environment{
+        EKS_Cluster_API_ENDPOINT="https://194AA3DAAD60ACB08F56BD9F77DBDABC.gr7.ap-south-1.eks.amazonaws.com"
+    }
+
+    stages {
+        stage('Download Artifacts') {
+            steps {
+                copyArtifacts(
+                    projectName: 'CI_MultiTierToK8s', 
+                    filter: 'Manifests/*.yml',
+                    fingerprintArtifacts: true
+                )
+            }
+        }
+        
+        /*
+         stage('Update the secret token in jenkins') {
+            steps {
+                script {
+                    def userInput = input(
+                        message: 'Updated the secret?',
+                        parameters: [
+                            choice(name: 'Proceed', choices: ['Yes', 'No'], description: 'Select Yes to continue, No to stop.')
+                        ]
+                    )
+                    if (userInput == 'No') {
+                        error("Deployment aborted by user.")
+                    }
+                }
+            }
+        }*/
+
+        
+        stage('Deploy to k8s') {
+            steps {
+                withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'my-eks-cluster', contextName: '', credentialsId: 'k8s-serviceaccount-token', namespace: 'opstree', serverUrl: EKS_Cluster_API_ENDPOINT]]) {
+                    sh "kubectl apply -f ./Manifests/dss.yml"
+                    sh "sleep 40"
+                }
+            }
+        }
+        
+        stage('Check if k8s deployment created') {
+            steps {
+                withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'my-eks-cluster', contextName: '', credentialsId: 'k8s-serviceaccount-token', namespace: 'opstree', serverUrl: EKS_Cluster_API_ENDPOINT]]) {
+                    sh "kubectl get pods -n opstree"
+                    sh "kubectl get svc -n opstree"
+                    
+                }
+            }
+        }
+    }
+}
