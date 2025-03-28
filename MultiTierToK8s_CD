@@ -2,7 +2,11 @@ pipeline {
     agent any
     
     environment{
-        EKS_Cluster_API_ENDPOINT="https://194AA3DAAD60ACB08F56BD9F77DBDABC.gr7.ap-south-1.eks.amazonaws.com"
+        EKS_Cluster_API_ENDPOINT="https://04CE7551EE64665FB0761E3D71993337.gr7.ap-south-1.eks.amazonaws.com"
+        SERVICE_ENDPOINT = ""
+        EXPOSED_PORT = ""
+        SLACK_CHANNEL = "#jenkins"
+        SLACK_CREDENTIALS_ID = "slack-token"
     }
 
     stages {
@@ -16,12 +20,12 @@ pipeline {
             }
         }
         
-        /*
-         stage('Update the secret token in jenkins') {
+        
+         stage('Deploy to Production? Dont forget to update the secret token before approving') {
             steps {
                 script {
                     def userInput = input(
-                        message: 'Updated the secret?',
+                        message: 'Updated the secret?Ready to Deploy?',
                         parameters: [
                             choice(name: 'Proceed', choices: ['Yes', 'No'], description: 'Select Yes to continue, No to stop.')
                         ]
@@ -31,7 +35,7 @@ pipeline {
                     }
                 }
             }
-        }*/
+        }
 
         
         stage('Deploy to k8s') {
@@ -45,11 +49,46 @@ pipeline {
         
         stage('Check if k8s deployment created') {
             steps {
-                withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'my-eks-cluster', contextName: '', credentialsId: 'k8s-serviceaccount-token', namespace: 'opstree', serverUrl: EKS_Cluster_API_ENDPOINT]]) {
-                    sh "kubectl get pods -n opstree"
-                    sh "kubectl get svc -n opstree"
-                    
+                script{
+                    withKubeCredentials(kubectlCredentials: [[caCertificate: '', clusterName: 'my-eks-cluster', contextName: '', credentialsId: 'k8s-serviceaccount-token', namespace: 'opstree', serverUrl: EKS_Cluster_API_ENDPOINT]]) {
+                        sh "kubectl get pods -n opstree"
+                        sh "kubectl get svc -n opstree"
+                        
+                        def serviceEndpoint = sh(script: "kubectl get svc -n opstree -o jsonpath='{.items[0].status.loadBalancer.ingress[0].hostname}'", returnStdout: true).trim()
+                        def exposedPort = sh(script: "kubectl get svc -n opstree -o jsonpath='{.items[0].spec.ports[0].port}'", returnStdout: true).trim()
+                
+                        env.SERVICE_ENDPOINT = serviceEndpoint
+                        env.EXPOSED_PORT = exposedPort
+                        
+                        
+                        echo "SERVICE_ENDPOINT: ${env.SERVICE_ENDPOINT}"
+                        echo "EXPOSED_PORT: ${env.EXPOSED_PORT}"
+                    }
                 }
+            }
+        }
+    }
+    post{
+        success{
+            script{
+                def message = """
+                ✅ *Kubernetes Deployment Successful!*
+                🏗 *Job:* ${env.JOB_NAME}  
+                🔄 *Build Number:* #${env.BUILD_NUMBER}  
+                🔗 *Service Endpoint:* http://${env.SERVICE_ENDPOINT}:${env.EXPOSED_PORT} 
+            """
+            slackSend(channel: SLACK_CHANNEL, color: 'good', message: message)
+            }
+        }
+        failure{
+            script{
+                def message = """
+                    ✅ *Kubernetes Deployment Failed*
+                    🏗 *Job:* ${env.JOB_NAME}  
+                    🔄 *Build Number:* #${env.BUILD_NUMBER}  
+                    🔗 *Build URL:*  <${env.BUILD_URL}>  
+                """
+            slackSend(channel: SLACK_CHANNEL, color: 'danger', message: message)
             }
         }
     }
