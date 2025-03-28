@@ -22,15 +22,18 @@ pipeline {
             }
         }
         stage('User Input') {
+            when {
+                expression { !params.ACTION || params.ACTION.trim() == '' }  // Check if ACTION is empty
+            }
             steps {
                 script {
                     def userChoice = input(
                         message: 'Select an action for the EKS Cluster:',
                         parameters: [
-                            choice(name: 'ACTION', choices: ['Create', 'Delete'], description: 'Choose Create to provision a new cluster or Delete to remove the existing one.')
+                            choice(name: 'IACTION', choices: ['Create', 'Delete'], description: 'Choose Create to provision a new cluster or Delete to remove the existing one.')
                         ]
                     )
-                    env.ACTION = userChoice
+                    env.IACTION = userChoice
                 }
             }
         }
@@ -55,7 +58,7 @@ pipeline {
         stage('Create EKS Cluster') {
             when {
                 allOf {
-                    expression { env.ACTION == 'Create' }
+                    expression { env.IACTION == 'Create' }
                     expression { env.CLUSTER_EXISTS == 'no' }
                 }
             }
@@ -75,7 +78,7 @@ pipeline {
         stage('Associate IAM OIDC Provider') {
             when {
                 allOf {
-                    expression { env.ACTION == 'Create' }
+                    expression { env.IACTION == 'Create' }
                     expression { env.CLUSTER_EXISTS == 'no' }
                 }
             }
@@ -94,7 +97,7 @@ pipeline {
         stage('Create Node Group') {
             when {
                 allOf {
-                    expression { env.ACTION == 'Create' }
+                    expression { env.IACTION == 'Create' }
                     expression { env.CLUSTER_EXISTS == 'no' }
                 }
             }
@@ -125,7 +128,7 @@ pipeline {
         stage('Create Service account and assign role') {
             when {
                 allOf {
-                    expression { env.ACTION == 'Create' }
+                    expression { env.IACTION == 'Create' }
                 }
             }
             steps {
@@ -142,7 +145,7 @@ pipeline {
         stage('Delete EKS Cluster') {
             when {
                 allOf {
-                    expression { env.ACTION == 'Delete' }
+                    expression { env.IACTION == 'Delete' }
                     expression { env.CLUSTER_EXISTS == 'yes' }
                 }
             }
@@ -150,18 +153,25 @@ pipeline {
                 script {
                     sh """
                     eksctl delete cluster --name=$CLUSTER_NAME --region=$AWS_REGION --wait
+                    echo "Cluster Delete Successfully..."
                     """
                 }
             }
         }
     }
 
+/*
     post {
         success {
-            echo "EKS Cluster and Node Group successfully created!"
-        }
-        failure {
-            echo "EKS Cluster provisioning failed. Check logs."
+            script {
+                if (env.IACTION == 'Create') {
+                    echo "Triggering TerraformJenkinsNexusSetup Job with 'apply' input"
+                    build job: 'TerraformJenkinsNexusSetup', 
+                          parameters: [string(name: 'ACTION', value: 'apply')], 
+                          wait: false 
+                }
+            }
         }
     }
+    */
 }
