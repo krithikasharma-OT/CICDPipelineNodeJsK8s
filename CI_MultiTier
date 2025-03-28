@@ -11,6 +11,10 @@ pipeline {
         SLACK_CHANNEL = "#jenkins"
         SLACK_CREDENTIALS_ID = "slack-token"
     }
+    
+    triggers {
+        githubPush()  
+    }
 
     stages {
         stage('Code checkout') {
@@ -27,7 +31,7 @@ pipeline {
             steps {
                     sh '''
                     echo "registry=https://registry.npmjs.org/" > ~/.npmrc
-                    echo "//43.205.118.239:8081/repository/npm-hosted/:_auth=YWRtaW46bmV4dXM=" >> ~/.npmrc
+                    echo "//13.233.21.202:8081/repository/npm-hosted/:_auth=YWRtaW46bmV4dXM=" >> ~/.npmrc
                     echo "always-auth=true" >> ~/.npmrc
                     cat ~/.npmrc
                     '''
@@ -99,6 +103,9 @@ pipeline {
     post {
         success {
             script {
+                echo "Triggering MultiTierToK8s_CD pipeline..."
+                build job: 'MultiTierToK8s_CD', wait: false
+            
                 def message = """
                 🚀 *Build Successful!*
                 🏗 *Job:* ${env.JOB_NAME}  
